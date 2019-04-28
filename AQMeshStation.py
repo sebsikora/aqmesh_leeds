@@ -11,6 +11,7 @@ class AQMeshStation():
 		self.MAX_COMMAND_RETRIES = 10
 		self.MAX_PARAMETER_RETRIES = 5
 		self.MAX_TIMESERVER_RETRIES = 5
+		self.MAX_RECONNECT_ATTEMPTS = 5
 		
 		self.arduino_port = '/dev/ttyACM0'
 		self.arduino_baud = 115200
@@ -25,19 +26,61 @@ class AQMeshStation():
 		
 		# Set the time on the arduino RTC to that returned from the NTP server.
 		comms_success, completed = self.setTime()
-		print completed
+		print comms_success, completed
+		
+		comms_success, completed, data_buffer = self.spoolData()
+		print comms_success, data_buffer
+	
+	def spoolData(self):
+		completed = False
+		comms_success = False
+		data_buffer = ''
+		tries = 0
+		while ((completed == False) and (tries < self.MAX_COMMAND_RETRIES)):
+			comms_success, response = self.arduino.Call('TX', 1)
+			if not comms_success:
+				return comms_success, completed, data_buffer	
+			print response
+			reply = response[0][1]
+			crc_success = response[0][0]
+			if crc_success == True:
+				if ((reply != 'fl') and (reply != 'to')):							# TX command arrived and data frame successfully returned.
+					data_buffer += reply
+					tries = 0
+					outgoing_command = 'AK'
+					while ((completed == False) and (tries < self.MAX_PARAMETER_RETRIES)):
+						comms_success, response = self.arduino.Call(outgoing_command, 1)
+						if not comms_success:
+							return comms_success, completed, data_buffer	
+						print response						
+						reply = response[0][1]
+						crc_success = response[0][0]
+						if crc_success == True:
+							if reply == 'cr':										# Arduino has asked if we want this data frame reset.
+								outgoing_command = 'AR'
+								tries += 1
+							elif reply == 'fs':										# Arduino has signalled that it is finished, need to ask for confirmation.
+								outgoing_command = 'CC'
+							elif reply == 'cc':										# Arduino has confirmed TX completion.
+								completed = True
+							elif reply == 'to':										# Arduino sent timeout. Send TX command again.
+								tries = 0
+								break
+							else:													# Next data frame arrived.
+								data_buffer += reply
+								outgoing_command = 'AK'
+						elif crc_success == False:									# Reply arrived garbled, ask for data frame to be resent.
+							outgoing_command = 'AR'
+							tries += 1
+				else:																# Arduino sent failed to understand command or sent timeout ('to'). Send TX command again.
+					tries += 1
+			elif crc_success == False:												# First reply arrived garbled so unsure if arduino is spooling.
+				tries += 1															# Send TX command again.
+		return comms_success, completed, data_buffer
 	
 	def setTime(self):
 		completed = False
-		# Check if serial connection to arduino is still open.
-		try:
-			self.arduino.ser.isOpen()
-			comms_success = True
-		except:
-			# If not, setTime fails.
-			print 'Could not open serial connection with Arduino...'
-			comms_success = False
-			return comms_success, completed
+		comms_success = False
 		tries = 0
 		while ((completed == False) and (tries < self.MAX_COMMAND_RETRIES)):
 			# Connect to a NTP server and query the current time
@@ -46,7 +89,9 @@ class AQMeshStation():
 				print 'Unable to obtain NTP timestamp.'
 				break
 			print timestamp
-			response = self.arduino.Call('ST', 1)
+			comms_success, response = self.arduino.Call('ST', 1)
+			if not comms_success:
+				return comms_success, completed
 			print response
 			reply = response[0][1]
 			crc_success = response[0][0]
@@ -55,20 +100,27 @@ class AQMeshStation():
 				for i, parameter in enumerate(timestamp):
 					tries = 0
 					while tries < self.MAX_PARAMETER_RETRIES:
-						response = self.arduino.Call(time_headers[i], 1)
+						comms_success, response = self.arduino.Call(time_headers[i], 1)
+						if not comms_success:
+							return comms_success, completed
 						print response
 						reply = response[0][1]
 						crc_success = response[0][0]
 						if ((reply == 'ht') and (crc_success == True)):
-							response = self.arduino.Call(str(parameter), 1)
+							comms_success, response = self.arduino.Call(str(parameter), 1)
+							if not comms_success:
+								return comms_success, completed
 							print response
 							reply = response[0][1]
 							crc_success = response[0][0]
-							if ((reply == 'TS') and (crc_success == True)):
+							if ((reply == 'ts') and (crc_success == True)):
 								completed = True
 								break
 							elif ((reply == 'ht') and (crc_success == True)):
 								break
+							elif ((reply == 'to') and (crc_success == True)):
+								completed = False
+								return comms_success, completed
 							else:
 								tries += 1
 						else:
@@ -79,19 +131,7 @@ class AQMeshStation():
 	
 	def startComms(self):
 		# Start the serial connection with the arduino.
-		try:
-			self.arduino = ArduinoComms.ArduinoComms(self.arduino_baud, self.arduino_port, self.arduino_timeout_secs)
-			time.sleep(1.0)
-			return True
-		except:
-			return False
-	
-	def calculateLRC(self, parameter_string):
-		# Calculate a simple left-to-right xor checksum of the parameter value as received.
-		lrc = 0;
-		for current_character in parameter_string:
-			lrc = lrc ^ ord(current_character)
-		return lrc
+		self.arduino = ArduinoComms.ArduinoComms(self.arduino_baud, self.arduino_port, self.arduino_timeout_secs, self.MAX_RECONNECT_ATTEMPTS)
 	
 	def internetOn(self):
 		print 'Checking for working internet connection...'

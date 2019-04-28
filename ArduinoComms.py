@@ -3,12 +3,27 @@ import time
 import crcmod.predefined
 
 class ArduinoComms():
-	def __init__(self, baud, port, timeout_secs):
+	def __init__(self, baud, port, timeout_secs, max_reconnect_attempts):
 		self.baud = baud
 		self.port = port
 		self.timeout = timeout_secs
-		self.ser = serial.Serial(self.port, self.baud)
-		time.sleep(1.0)
+		self.max_reconnect_attempts = max_reconnect_attempts
+		self.connect()
+	
+	def connect(self):
+		comms_success = False
+		tries = 0
+		while ((comms_success == False) and (tries < self.max_reconnect_attempts)):
+			try:
+				self.ser = serial.Serial(self.port, self.baud)
+				comms_success = True
+				time.sleep(1.0)
+			except:
+				comms_success = False
+				tries += 1
+				print 'No serial connection with Arduino...'
+				time.sleep(0.05)
+		return comms_success
 	
 	def __SerialSpeak(self, message):
 		try:
@@ -75,11 +90,17 @@ class ArduinoComms():
 	
 	def Call(self, message, expected_replies):
 		response = []
-		self.__SerialSpeak(message)
-		for reply in range(expected_replies):
-			crc_success, reply_message = self.__SerialListen(self.timeout)
-			response.append([crc_success, reply_message])
-		return response
+		comms_success = False
+		try:
+			self.__SerialSpeak(message)
+			for reply in range(expected_replies):
+				crc_success, reply_message = self.__SerialListen(self.timeout)
+				response.append([crc_success, reply_message])
+			comms_success = True
+		except:
+			comms_success = False
+			response = [['', ''] for i in range(expected_replies)]
+		return comms_success, response
 	
 	def calcCRC8(self, message):
 		crc8 = crcmod.predefined.mkPredefinedCrcFun('crc-8-maxim')
