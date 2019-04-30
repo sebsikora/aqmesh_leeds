@@ -47,6 +47,8 @@ class ArduinoComms():
 					received_character = self.ser.read(1)
 					if received_character == '>':
 						started = True
+						returned_message = ''
+						mode = 0
 					elif received_character == '<':
 						mode = 1
 					elif received_character == '\0':
@@ -67,6 +69,8 @@ class ArduinoComms():
 					received_character = self.ser.read(1)
 					if received_character == '>':
 						started = True
+						returned_message = ''
+						mode = 0
 					elif received_character == '<':
 						mode = 1
 					elif received_character == '\0':
@@ -89,9 +93,11 @@ class ArduinoComms():
 		return crc_success, returned_message
 	
 	def Call(self, message, expected_replies):
-		response = []
 		comms_success = False
+		while (self.ser.inWaiting() > 0):								# Clear the serial input buffer prior to beginning a call->response...
+			self.ser.read(1)
 		try:
+			response = []
 			self.__SerialSpeak(message)
 			for reply in range(expected_replies):
 				crc_success, reply_message = self.__SerialListen(self.timeout)
