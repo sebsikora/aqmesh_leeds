@@ -22,7 +22,7 @@ class AQMeshStation():
 		self.FTP_PORT = 21
 		self.FTP_LOGIN = 'epiz_23835097'
 		self.FTP_PASSWORD = 'YRyhrbvxTU3bBK'
-		self.FTP_ROOT_DIR = '/htdocs/'
+		self.FTP_ROOT_DIR = '/aqleeds.epizy.com/htdocs/'
 		
 		self.NTP_TIMESERVER = 'europe.pool.ntp.org'
 		self.WEB_CONNECTIVITY_CHECK_URL = 'http://www.google.com'
@@ -36,12 +36,14 @@ class AQMeshStation():
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
 		
-		# Set the time on the arduino RTC to that returned from the NTP server.
-		comms_success, completed = self.setTime()
-		print comms_success, completed
+		#~ # Set the time on the arduino RTC to that returned from the NTP server.
+		#~ comms_success, completed = self.setTime()
+		#~ print comms_success, completed
+		
+		self.setADCAveragingPeriod(4)
 		
 		logging_interval_secs = 30
-		number_of_logs = 10
+		number_of_logs = 20
 		
 		start_timestamp = time.time()
 		for i in range(number_of_logs):
@@ -60,18 +62,35 @@ class AQMeshStation():
 			data_buffer = data_buffer[4:]
 			print ""
 			print new_index
-			print data_buffer
+			
+			adc_data_buffer, opc_data_buffer = self.parseData(data_buffer)
+			print adc_data_buffer
+			print opc_data_buffer
 			
 			# Block until we detect a working web connection.
 			while (not self.internetOn()):
 				pass
 			
 			if comms_success:
-				print 'Storing received data locally...'
-				local_file_path = self.storeData(self.LOCAL_DEFAULT_PATH, data_buffer, new_index)
-				print 'Uplodaing received data to FTP server...'
-				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID)
-				upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_file_path)
+				print 'Storing ADC data locally...'
+				local_adc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'ADC_DATA/', 'ADC', adc_data_buffer, new_index)
+				print 'Uplodaing ADC data to FTP server...'
+				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/ADC_DATA'
+				upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_adc_file_path)
+				print 'Storing OPC data locally...'
+				local_opc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'OPC_DATA/', 'OPC', opc_data_buffer, new_index)
+				print 'Uplodaing OPC data to FTP server...'
+				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/OPC_DATA'
+				upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_opc_file_path)
+		
+	def parseData(self, data_buffer):
+		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
+		adc_rows = [entry[6:] for entry in split_data if entry.startswith("(ADCS)")]
+		adc_data_buffer = '\r\n'.join(adc_rows) + '\r\n'
+		opc_rows = [entry[5:] for entry in split_data if entry.startswith("(OPC)")]
+		opc_data_buffer = '\r\n'.join(opc_rows) + '\r\n'
+		return adc_data_buffer, opc_data_buffer
+		
 			
 	def uploadData(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, local_file_path):
 		from ftplib import FTP
@@ -83,11 +102,7 @@ class AQMeshStation():
 			ftp.set_debuglevel(2)
 			ftp.connect(ftp_server, ftp_port)
 			ftp.login(ftp_login, ftp_password)
-			try:
-				ftp.cwd(destination_dir)
-			except:
-				ftp.mkd(destination_dir)
-				ftp.cwd(destination_dir)
+			self.FTPChangeDirectory(ftp, destination_dir)
 			file = open(local_file_path, 'rb')
 			ftp.storbinary('STOR %s' % os.path.basename(local_file_path), file, 1024)
 			file.close()
@@ -101,7 +116,18 @@ class AQMeshStation():
 			upload_successful = False
 		return upload_successful
 	
-	def storeData(self, dir_path, data_buffer, new_index):
+	def FTPChangeDirectory(self, ftp, dir_path):						# We want to try and change into the target directory on the FTP server, and if it doesn't exist - create it.
+		dir_sequence = dir_path.split('/')[1:]							# However, it will fail if we try and do it in one pass, so instead we descend down the target directory path,
+		path_to_try = ''												# trying to cd into each directory in turn, creating it if we can't.
+		for current_dir in dir_sequence:
+			path_to_try += '/' + current_dir
+			try:
+				ftp.cwd(path_to_try)
+			except:
+				ftp.mkd(path_to_try)
+				ftp.cwd(path_to_try)
+	
+	def storeData(self, dir_path, data_type, data_buffer, new_index):
 		import os
 		import datetime
 		directory_exists = os.path.isdir(dir_path)						# Check if local store directory exists.
@@ -112,25 +138,19 @@ class AQMeshStation():
 		month = str(todays_date.month).zfill(2)
 		day = str(todays_date.day).zfill(2)
 		date_string = year + month + day
-		#~ # Get a list of all files in the local store.
-		#~ files_in_directory = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
-		#~ # Identify todays log files (start with todays date in YYYYMMDD format and contain the station ID no.
-		#~ todays_data_files = [f for f in files_in_directory if ((f.split('_')[0].startswith(date_string)) and (f.split('_')[-1].startswith('station-' + str(self.STATION_ID))))]
-		#~ todays_data_file_indices = [int(i.split('.')[-1]) for i in todays_data_files]
-		#~ if todays_data_files:											# Determine the highest index of existing logs.
-			#~ new_index = max(todays_data_file_indices) + 1				# Create a new filename with index incremented.
-		#~ else:
-			#~ new_index = 0
 		new_index_string = str(new_index).zfill(3)
-		new_filename = dir_path + date_string + '_station-' + str(self.STATION_ID) + '.' + new_index_string
+		new_filename = dir_path + date_string + '_station-' + str(self.STATION_ID) + '_' + data_type + '.' + new_index_string
 		if os.path.isfile(new_filename):
-			j = 0
-			while (j < 1000):
-				if os.path.isfile(new_filename[:-4] + '_' + str(j).zfill(3) + new_filename[-4:]):
-					j += 1
-				else:
-					new_filename = new_filename[:-4] + '_' + str(j).zfill(3) + new_filename[-4:]
-					break
+			modified_filename = new_filename[:-4] + '_' + str(0).zfill(3) + new_filename[-4:]
+			if os.path.isfile(modified_filename):
+				j = 1
+				while (j < 1000):
+					if os.path.isfile(modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]):
+						j += 1
+					else:
+						modified_filename = modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]
+						break
+			new_filename = modified_filename
 		with open(new_filename, 'a') as output_file:					# Create a new file with this filename.
 			print new_filename											# Write contents of data buffer to this file.
 			output_file.write(data_buffer)
@@ -148,7 +168,7 @@ class AQMeshStation():
 			print response
 			reply = response[0][1]
 			crc_success = response[0][0]
-			if ((crc_success == True) and (reply != 'to')):							# TX command arrived and file index string successfully returned.
+			if ((crc_success == True) and (reply != 'to')):						# TX command arrived and file index string successfully returned.
 				data_buffer = data_buffer + reply + '>'
 				tries = 0
 				outgoing_command = 'AK'
@@ -235,6 +255,51 @@ class AQMeshStation():
 					else:
 						tries = 0
 			else:
+				tries += 1
+		return comms_success, completed
+	
+	def setADCAveragingPeriod(self, averaging_period):
+		completed = False
+		comms_success = False
+		tries = 0
+		while ((completed == False) and (tries < self.MAX_COMMAND_RETRIES)):
+			comms_success, response = self.arduino.Call('CA', 1)
+			if not comms_success:
+				return comms_success, completed	
+			print response
+			reply = response[0][1]
+			crc_success = response[0][0]
+			if ((crc_success == True) and (reply != 'to')):
+				if reply == 'ak':												# CA command arrived and ack received from arduino.
+					tries = 0
+					outgoing_command = str(averaging_period)
+					while ((completed == False) and (tries < self.MAX_PARAMETER_RETRIES)):
+						comms_success, response = self.arduino.Call(outgoing_command, 1)
+						if not comms_success:
+							return comms_success, completed	
+						print response						
+						reply = response[0][1]
+						crc_success = response[0][0]
+						if crc_success == True:
+							if reply == 'fs':
+								outgoing_command = 'CC'
+							elif reply == 'cc':
+								completed = True
+								break
+							elif reply == 'to':
+								tries = 0
+								break
+							else:
+								outgoing_command = str(averaging_period)
+								tries += 1
+						elif crc_success == False:
+							outgoing_command = str(averaging_period)
+							tries += 1
+				else:
+					tries += 1										
+			elif ((crc_success == True) and (reply == 'to')):					# Arduino failed to understand command or sent timeout ('to'). Send TX command again.
+				tries += 1
+			elif crc_success == False:											# File index string reply arrived garbled so send TX command again to ask Arduino to repeat
 				tries += 1
 		return comms_success, completed
 	
