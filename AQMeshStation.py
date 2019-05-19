@@ -36,52 +36,53 @@ class AQMeshStation():
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
 		
-		#~ # Set the time on the arduino RTC to that returned from the NTP server.
-		#~ comms_success, completed = self.setTime()
-		#~ print comms_success, completed
+		# Set the time on the arduino RTC to that returned from the NTP server.
+		comms_success, completed = self.setTime()
+		time.sleep(1.0)
 		
-		self.setADCAveragingPeriod(4)
+		self.setParameter('adc_averaging_period', 7)
+		time.sleep(1.0)
+		self.setParameter('opc_averaging_period', 3)
+		#~ logging_interval_secs = 30
+		#~ number_of_logs = 1
 		
-		logging_interval_secs = 30
-		number_of_logs = 20
-		
-		start_timestamp = time.time()
-		for i in range(number_of_logs):
-			time_to_upload = False
-			while (time_to_upload == False):
-				timestamp = time.time()
-				print str(logging_interval_secs - int(timestamp - start_timestamp)) + ' seconds until next update...'
-				if int(timestamp - start_timestamp) >= logging_interval_secs:
-					time_to_upload = True
-				time.sleep(1.0)
-			start_timestamp = time.time()
-			print 'Updating...'
+		#~ start_timestamp = time.time()
+		#~ for i in range(number_of_logs):
+			#~ time_to_upload = False
+			#~ while (time_to_upload == False):
+				#~ timestamp = time.time()
+				#~ print str(logging_interval_secs - int(timestamp - start_timestamp)) + ' seconds until next update...'
+				#~ if int(timestamp - start_timestamp) >= logging_interval_secs:
+					#~ time_to_upload = True
+				#~ time.sleep(1.0)
+			#~ start_timestamp = time.time()
+			#~ print 'Updating...'
 			
-			comms_success, completed, data_buffer = self.spoolData()
-			new_index = int(data_buffer[0:3])
-			data_buffer = data_buffer[4:]
-			print ""
-			print new_index
+			#~ comms_success, completed, data_buffer = self.spoolData()
+			#~ new_index = int(data_buffer[0:3])
+			#~ data_buffer = data_buffer[4:]
+			#~ print ""
+			#~ print new_index
 			
-			adc_data_buffer, opc_data_buffer = self.parseData(data_buffer)
-			print adc_data_buffer
-			print opc_data_buffer
+			#~ adc_data_buffer, opc_data_buffer = self.parseData(data_buffer)
+			#~ print adc_data_buffer
+			#~ print opc_data_buffer
 			
-			# Block until we detect a working web connection.
-			while (not self.internetOn()):
-				pass
+			#~ # Block until we detect a working web connection.
+			#~ while (not self.internetOn()):
+				#~ pass
 			
-			if comms_success:
-				print 'Storing ADC data locally...'
-				local_adc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'ADC_DATA/', 'ADC', adc_data_buffer, new_index)
-				print 'Uplodaing ADC data to FTP server...'
-				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/ADC_DATA'
-				upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_adc_file_path)
-				print 'Storing OPC data locally...'
-				local_opc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'OPC_DATA/', 'OPC', opc_data_buffer, new_index)
-				print 'Uplodaing OPC data to FTP server...'
-				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/OPC_DATA'
-				upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_opc_file_path)
+			#~ if comms_success:
+				#~ print 'Storing ADC data locally...'
+				#~ local_adc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'ADC_DATA/', 'ADC', adc_data_buffer, new_index)
+				#~ print 'Uplodaing ADC data to FTP server...'
+				#~ destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/ADC_DATA'
+				#~ upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_adc_file_path)
+				#~ print 'Storing OPC data locally...'
+				#~ local_opc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'OPC_DATA/', 'OPC', opc_data_buffer, new_index)
+				#~ print 'Uplodaing OPC data to FTP server...'
+				#~ destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/OPC_DATA'
+				#~ upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_opc_file_path)
 		
 	def parseData(self, data_buffer):
 		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
@@ -202,7 +203,7 @@ class AQMeshStation():
 			elif crc_success == False:											# File index string reply arrived garbled so send TX command again to ask Arduino to repeat
 				tries += 1
 		return comms_success, completed, data_buffer
-	
+
 	def setTime(self):
 		completed = False
 		comms_success = False
@@ -220,60 +221,79 @@ class AQMeshStation():
 			print response
 			reply = response[0][1]
 			crc_success = response[0][0]
-			if ((reply == 'ak') and (crc_success == True)):
-				time_headers = ['YY', 'MM', 'DD', 'hh', 'mm', 'ss']
-				for i, parameter in enumerate(timestamp):
-					tries = 0
-					while tries < self.MAX_PARAMETER_RETRIES:
-						comms_success, response = self.arduino.Call(time_headers[i], 1)
-						if not comms_success:
-							return comms_success, completed
-						print response
-						reply = response[0][1]
-						crc_success = response[0][0]
-						if ((reply == 'ht') and (crc_success == True)):
-							comms_success, response = self.arduino.Call(str(parameter), 1)
+			if crc_success == True:
+				if reply == 'ak':												# ST command arrived and ack received from arduino.
+					time_headers = ['YY', 'MM', 'DD', 'hh', 'mm', 'ss']
+					for i, parameter in enumerate(timestamp):
+						tries = 0
+						while tries < self.MAX_PARAMETER_RETRIES:
+							comms_success, response = self.arduino.Call(time_headers[i], 1)
 							if not comms_success:
-								break
+								return comms_success, completed
 							print response
 							reply = response[0][1]
 							crc_success = response[0][0]
-							if ((reply == 'ts') and (crc_success == True)):
-								completed = True
-								break
-							elif ((reply == 'ht') and (crc_success == True)):
-								break
-							elif ((reply == 'to') and (crc_success == True)):
-								completed = False
-								return comms_success, completed
+							if ((reply == 'ht') and (crc_success == True)):
+								comms_success, response = self.arduino.Call(str(parameter), 1)
+								if not comms_success:
+									return comms_success, completed
+								print response
+								reply = response[0][1]
+								crc_success = response[0][0]
+								if crc_success == True:
+									if reply == 'ht':
+										break
+									elif reply == 'to':
+										completed = False
+										return comms_success, completed
+									elif reply == 'fs':
+										completed = True
+										break
+									else:
+										tries += 1
+								else:
+									tries += 1
 							else:
 								tries += 1
-						else:
-							tries += 1
-					if not comms_success:
-						break
-					else:
-						tries = 0
+					
+				else:
+					tries += 1
+			else:
+				tries += 1
+		tries = 0
+		while tries < self.MAX_PARAMETER_RETRIES:
+			comms_success, response = self.arduino.Call('AK', 1)
+			if not comms_success:
+				return comms_success, completed
+			print response
+			reply = response[0][1]
+			crc_success = response[0][0]
+			if crc_success == True:
+				if reply == 'ak':
+					break
+				else:
+					tries += 1
 			else:
 				tries += 1
 		return comms_success, completed
 	
-	def setADCAveragingPeriod(self, averaging_period):
+	def setParameter(self, parameter, value):
 		completed = False
 		comms_success = False
 		tries = 0
 		while ((completed == False) and (tries < self.MAX_COMMAND_RETRIES)):
-			comms_success, response = self.arduino.Call('CA', 1)
+			comms_success, response = self.arduino.Call('CP', 1)
 			if not comms_success:
 				return comms_success, completed	
 			print response
 			reply = response[0][1]
 			crc_success = response[0][0]
 			if ((crc_success == True) and (reply != 'to')):
-				if reply == 'ak':												# CA command arrived and ack received from arduino.
+				if reply == 'ak':												# CP command arrived and ack received from arduino.
 					tries = 0
-					outgoing_command = str(averaging_period)
-					while ((completed == False) and (tries < self.MAX_PARAMETER_RETRIES)):
+					parameter_headers = {'adc_averaging_period': 'AP', 'opc_averaging_period': 'OP'}
+					outgoing_command = parameter_headers[parameter]
+					while tries < self.MAX_PARAMETER_RETRIES:
 						comms_success, response = self.arduino.Call(outgoing_command, 1)
 						if not comms_success:
 							return comms_success, completed	
@@ -281,25 +301,34 @@ class AQMeshStation():
 						reply = response[0][1]
 						crc_success = response[0][0]
 						if crc_success == True:
-							if reply == 'fs':
-								outgoing_command = 'CC'
-							elif reply == 'cc':
+							if reply == 'ak':
+								if completed == False:
+									outgoing_command = str(value)
+								else:
+									break
+							elif reply == 'fs':
 								completed = True
-								break
+								outgoing_command = 'AK'
 							elif reply == 'to':
 								tries = 0
 								break
 							else:
-								outgoing_command = str(averaging_period)
+								if completed == False:
+									outgoing_command = parameter_headers[parameter]
+								else:
+									outgoing_command = 'AK'
 								tries += 1
 						elif crc_success == False:
-							outgoing_command = str(averaging_period)
+							if completed == False:
+								outgoing_command = parameter_headers[parameter]
+							else:
+								outgoing_command = 'AK'
 							tries += 1
 				else:
 					tries += 1										
-			elif ((crc_success == True) and (reply == 'to')):					# Arduino failed to understand command or sent timeout ('to'). Send TX command again.
+			elif ((crc_success == True) and (reply == 'to')):					# Arduino failed to understand command or sent timeout ('to'). Send CP command again.
 				tries += 1
-			elif crc_success == False:											# File index string reply arrived garbled so send TX command again to ask Arduino to repeat
+			elif crc_success == False:
 				tries += 1
 		return comms_success, completed
 	
