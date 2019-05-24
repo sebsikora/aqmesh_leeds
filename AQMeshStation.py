@@ -3,6 +3,8 @@ import ntplib
 from time import ctime
 import datetime
 import time
+from gpiozero import LED
+import os
 
 import ArduinoComms
 
@@ -13,7 +15,8 @@ class AQMeshStation():
 		self.MAX_TIMESERVER_RETRIES = 5
 		self.MAX_RECONNECT_ATTEMPTS = 5
 		
-		self.ARDUINO_PORT = '/dev/ttyACM0'
+		#~ self.ARDUINO_PORT = '/dev/ttyACM0'
+		self.ARDUINO_PORT = '/dev/ttyUSB0'
 		self.ARDUINO_BAUD = 115200
 		self.ARDUINO_TIMEOUT_SECS = 1.0
 		
@@ -29,20 +32,25 @@ class AQMeshStation():
 		
 		self.LOCAL_DEFAULT_PATH = './local_store/'
 		
-		# Block until we detect a working web connection.
-		while (not self.internetOn()):
-			pass
+		self.running_flag = LED(21)
+		
+		#~ # Block until we detect a working web connection.
+		#~ while (not self.internetOn()):
+			#~ pass
 		
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
 		
-		# Set the time on the arduino RTC to that returned from the NTP server.
-		comms_success, completed = self.setTime()
-		time.sleep(1.0)
+		# Flag that the RPI is ready to update.
+		self.running_flag.on()
 		
-		self.setParameter('adc_averaging_period', 7)
-		time.sleep(1.0)
-		self.setParameter('opc_averaging_period', 3)
+		#~ # Set the time on the arduino RTC to that returned from the NTP server.
+		#~ comms_success, completed = self.setTime()
+		#~ time.sleep(1.0)
+		
+		#~ self.setParameter('adc_averaging_period', 7)
+		#~ time.sleep(1.0)
+		#~ self.setParameter('opc_averaging_period', 3)
 		#~ logging_interval_secs = 30
 		#~ number_of_logs = 1
 		
@@ -58,31 +66,45 @@ class AQMeshStation():
 			#~ start_timestamp = time.time()
 			#~ print 'Updating...'
 			
-			#~ comms_success, completed, data_buffer = self.spoolData()
-			#~ new_index = int(data_buffer[0:3])
-			#~ data_buffer = data_buffer[4:]
-			#~ print ""
-			#~ print new_index
-			
-			#~ adc_data_buffer, opc_data_buffer = self.parseData(data_buffer)
-			#~ print adc_data_buffer
-			#~ print opc_data_buffer
-			
-			#~ # Block until we detect a working web connection.
-			#~ while (not self.internetOn()):
-				#~ pass
-			
-			#~ if comms_success:
-				#~ print 'Storing ADC data locally...'
-				#~ local_adc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'ADC_DATA/', 'ADC', adc_data_buffer, new_index)
-				#~ print 'Uplodaing ADC data to FTP server...'
-				#~ destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/ADC_DATA'
-				#~ upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_adc_file_path)
-				#~ print 'Storing OPC data locally...'
-				#~ local_opc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'OPC_DATA/', 'OPC', opc_data_buffer, new_index)
-				#~ print 'Uplodaing OPC data to FTP server...'
-				#~ destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/OPC_DATA'
-				#~ upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_opc_file_path)
+		comms_success, completed, data_buffer = self.spoolData()
+		new_index = int(data_buffer[0:3])
+		data_buffer = data_buffer[4:]
+		print ""
+		print new_index
+		
+		adc_data_buffer, opc_data_buffer, batt_data_buffer = self.parseData(data_buffer)
+		print adc_data_buffer
+		print opc_data_buffer
+		print batt_data_buffer
+		
+		# Block until we detect a working web connection.
+		while (not self.internetOn()):
+			pass
+		
+		if comms_success:
+			print 'Storing ADC data locally...'
+			local_adc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'ADC_DATA/', 'ADC', adc_data_buffer, new_index)
+			print 'Uplodaing ADC data to FTP server...'
+			destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/ADC_DATA'
+			upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_adc_file_path)
+			print 'Storing OPC data locally...'
+			local_opc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'OPC_DATA/', 'OPC', opc_data_buffer, new_index)
+			print 'Uplodaing OPC data to FTP server...'
+			destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/OPC_DATA'
+			upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_opc_file_path)
+			print 'Storing BATT data locally...'
+			local_batt_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'BATT_DATA/', 'BATT', batt_data_buffer, new_index)
+			print 'Uplodaing BATT data to FTP server...'
+			destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/BATT_DATA'
+			upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_batt_file_path)
+		
+		# Indicate that the RPI is finished updating.
+		self.running_flag.off()
+		
+		# Shut down the RPI. -h forces it to 'halt' and stay off, rather than immediately restarting.
+		os.system("sudo shutdown -h now")
+		
+		# ~~~ Fin ~~~
 		
 	def parseData(self, data_buffer):
 		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
@@ -90,7 +112,9 @@ class AQMeshStation():
 		adc_data_buffer = '\r\n'.join(adc_rows) + '\r\n'
 		opc_rows = [entry[5:] for entry in split_data if entry.startswith("(OPC)")]
 		opc_data_buffer = '\r\n'.join(opc_rows) + '\r\n'
-		return adc_data_buffer, opc_data_buffer
+		batt_rows = [entry[6:] for entry in split_data if entry.startswith("(BATT)")]
+		batt_data_buffer = '\r\n'.join(batt_rows) + '\r\n'
+		return adc_data_buffer, opc_data_buffer, batt_data_buffer
 		
 			
 	def uploadData(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, local_file_path):
