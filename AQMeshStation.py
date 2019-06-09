@@ -1,4 +1,4 @@
-import urllib
+import urllib2
 import ntplib
 from time import ctime
 import datetime
@@ -11,12 +11,12 @@ import ArduinoComms
 class AQMeshStation():
 	def __init__ (self):
 		self.MAX_COMMAND_RETRIES = 10
-		self.MAX_PARAMETER_RETRIES = 5
-		self.MAX_TIMESERVER_RETRIES = 5
-		self.MAX_RECONNECT_ATTEMPTS = 5
+		self.MAX_PARAMETER_RETRIES = 10
+		self.MAX_TIMESERVER_RETRIES = 10
+		self.MAX_RECONNECT_ATTEMPTS = 10
 		
-		#~ self.ARDUINO_PORT = '/dev/ttyACM0'
-		self.ARDUINO_PORT = '/dev/ttyUSB0'
+		self.ARDUINO_PORT = '/dev/ttyACM0'
+		#~ self.ARDUINO_PORT = '/dev/ttyUSB0'
 		self.ARDUINO_BAUD = 115200
 		self.ARDUINO_TIMEOUT_SECS = 1.0
 		
@@ -32,11 +32,11 @@ class AQMeshStation():
 		
 		self.LOCAL_DEFAULT_PATH = './local_store/'
 		
-		self.running_flag = LED(21)
+		self.FILES_TO_UPLOAD = {'ADC': './ADC_TO_UPLOAD.txt',
+								'OPC': './OPC_TO_UPLOAD.txt',
+								'BATT': './BATT_TO_UPLOAD.txt'}
 		
-		#~ # Block until we detect a working web connection.
-		#~ while (not self.internetOn()):
-			#~ pass
+		self.running_flag = LED(21)
 		
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
@@ -44,59 +44,47 @@ class AQMeshStation():
 		# Flag that the RPI is ready to update.
 		self.running_flag.on()
 		
-		#~ # Set the time on the arduino RTC to that returned from the NTP server.
+		# Set the time on the arduino RTC to that returned from the NTP server.
 		#~ comms_success, completed = self.setTime()
-		#~ time.sleep(1.0)
-		
 		#~ self.setParameter('adc_averaging_period', 7)
-		#~ time.sleep(1.0)
 		#~ self.setParameter('opc_averaging_period', 3)
-		#~ logging_interval_secs = 30
-		#~ number_of_logs = 1
 		
-		#~ start_timestamp = time.time()
-		#~ for i in range(number_of_logs):
-			#~ time_to_upload = False
-			#~ while (time_to_upload == False):
-				#~ timestamp = time.time()
-				#~ print str(logging_interval_secs - int(timestamp - start_timestamp)) + ' seconds until next update...'
-				#~ if int(timestamp - start_timestamp) >= logging_interval_secs:
-					#~ time_to_upload = True
-				#~ time.sleep(1.0)
-			#~ start_timestamp = time.time()
-			#~ print 'Updating...'
-			
-		comms_success, completed, data_buffer = self.spoolData()
-		new_index = int(data_buffer[0:3])
-		data_buffer = data_buffer[4:]
-		print ""
-		print new_index
+		comms_success, completed, files = self.spoolData()
+		print files
 		
-		adc_data_buffer, opc_data_buffer, batt_data_buffer = self.parseData(data_buffer)
-		print adc_data_buffer
-		print opc_data_buffer
-		print batt_data_buffer
+		for current_file in files:
+			current_file_name = current_file[2:14]
+			current_file_data = current_file[14:]
+			adc_data, opc_data, batt_data = self.parseData(current_file_data)
+			stored_adc_file = self.storeData('ADC', current_file_name, adc_data)
+			stored_opc_file = self.storeData('OPC', current_file_name, opc_data)
+			stored_batt_file = self.storeData('BATT', current_file_name, batt_data)
+			self.markForUpload('ADC', stored_adc_file)
+			self.markForUpload('OPC', stored_opc_file)
+			self.markForUpload('BATT', stored_batt_file)
 		
-		# Block until we detect a working web connection.
-		while (not self.internetOn()):
-			pass
+		internet_available = False
+		for attempt in range(5):
+			internet_available = self.internetOn()
+			if internet_available:
+				break
 		
-		if comms_success:
-			print 'Storing ADC data locally...'
-			local_adc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'ADC_DATA/', 'ADC', adc_data_buffer, new_index)
-			print 'Uplodaing ADC data to FTP server...'
-			destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/ADC_DATA'
-			upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_adc_file_path)
-			print 'Storing OPC data locally...'
-			local_opc_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'OPC_DATA/', 'OPC', opc_data_buffer, new_index)
-			print 'Uplodaing OPC data to FTP server...'
-			destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/OPC_DATA'
-			upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_opc_file_path)
-			print 'Storing BATT data locally...'
-			local_batt_file_path = self.storeData(self.LOCAL_DEFAULT_PATH + 'BATT_DATA/', 'BATT', batt_data_buffer, new_index)
-			print 'Uplodaing BATT data to FTP server...'
-			destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/BATT_DATA'
-			upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, local_batt_file_path)
+		if internet_available:
+			file_types = ['ADC', 'OPC', 'BATT']
+			failed_uploads = []
+			for file_type in file_types:
+				files = self.waitingForUpload(file_type)
+				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/' + file_type + '_DATA'
+				failed_uploads_of_this_type = []
+				for current_file in files:
+					upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, current_file)
+					if not upload_success:
+						failed_uploads_of_this_type.append(current_file)
+				failed_uploads.append(failed_uploads_of_this_type)
+			for i, file_type in enumerate(file_types):
+				os.remove(self.FILES_TO_UPLOAD[file_type])
+				for current_file in failed_uploads[i]:
+					self.markForUpload(file_type, current_file)
 		
 		# Indicate that the RPI is finished updating.
 		self.running_flag.off()
@@ -152,81 +140,123 @@ class AQMeshStation():
 				ftp.mkd(path_to_try)
 				ftp.cwd(path_to_try)
 	
-	def storeData(self, dir_path, data_type, data_buffer, new_index):
+	def storeData(self, data_type, file_name, data):
 		import os
-		import datetime
-		directory_exists = os.path.isdir(dir_path)						# Check if local store directory exists.
-		if not directory_exists:										# If not, create it.
-			os.mkdir(dir_path)	
-		todays_date = datetime.date.today()								# Get todays date in YYYYMMDD format.
-		year = str(todays_date.year)
-		month = str(todays_date.month).zfill(2)
-		day = str(todays_date.day).zfill(2)
-		date_string = year + month + day
-		new_index_string = str(new_index).zfill(3)
-		new_filename = dir_path + date_string + '_station-' + str(self.STATION_ID) + '_' + data_type + '.' + new_index_string
-		if os.path.isfile(new_filename):
-			modified_filename = new_filename[:-4] + '_' + str(0).zfill(3) + new_filename[-4:]
-			if os.path.isfile(modified_filename):
-				j = 1
-				while (j < 1000):
-					if os.path.isfile(modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]):
-						j += 1
-					else:
-						modified_filename = modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]
-						break
-			new_filename = modified_filename
-		with open(new_filename, 'a') as output_file:					# Create a new file with this filename.
-			print new_filename											# Write contents of data buffer to this file.
-			output_file.write(data_buffer)
-		return new_filename												# Return the path to the new log.
+		dir_path = self.LOCAL_DEFAULT_PATH + data_type + '/'
+		file_path = dir_path + file_name
+		directory_exists = os.path.isdir(dir_path)
+		if not directory_exists:
+			os.mkdir(dir_path)
+		with open(file_path, 'a') as output_file:
+			output_file.write(data)
+		return file_path
+	
+	def markForUpload(self, data_type, file_path):
+		with open(self.FILES_TO_UPLOAD[data_type], 'a') as output_file:
+			output_file.write(file_path + '\r\n')
+	
+	def waitingForUpload(self, data_type):
+		files_to_upload = []
+		with open(self.FILES_TO_UPLOAD[data_type], 'r') as input_file:
+			files_to_upload = input_file.read().split()
+		return files_to_upload
+	
+	def clearUploadList(self, data_type):
+		import os
+		os.remove(self.FILES_TO_UPLOAD[data_type])
+	
+	#~ def storeData(self, dir_path, data_type, data_buffer, new_index):
+		#~ import os
+		#~ import datetime
+		#~ directory_exists = os.path.isdir(dir_path)						# Check if local store directory exists.
+		#~ if not directory_exists:										# If not, create it.
+			#~ os.mkdir(dir_path)	
+		#~ todays_date = datetime.date.today()								# Get todays date in YYYYMMDD format.
+		#~ year = str(todays_date.year)
+		#~ month = str(todays_date.month).zfill(2)
+		#~ day = str(todays_date.day).zfill(2)
+		#~ date_string = year + month + day
+		#~ new_index_string = str(new_index).zfill(3)
+		#~ new_filename = dir_path + date_string + '_station-' + str(self.STATION_ID) + '_' + data_type + '.' + new_index_string
+		#~ if os.path.isfile(new_filename):
+			#~ modified_filename = new_filename[:-4] + '_' + str(0).zfill(3) + new_filename[-4:]
+			#~ if os.path.isfile(modified_filename):
+				#~ j = 1
+				#~ while (j < 1000):
+					#~ if os.path.isfile(modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]):
+						#~ j += 1
+					#~ else:
+						#~ modified_filename = modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]
+						#~ break
+			#~ new_filename = modified_filename
+		#~ with open(new_filename, 'a') as output_file:					# Create a new file with this filename.
+			#~ print new_filename											# Write contents of data buffer to this file.
+			#~ output_file.write(data_buffer)
+		#~ return new_filename												# Return the path to the new log.
 	
 	def spoolData(self):
 		completed = False
 		comms_success = False
-		data_buffer = ''
 		tries = 0
+		outgoing_command = 'TX'
 		while ((completed == False) and (tries < self.MAX_COMMAND_RETRIES)):
-			comms_success, response = self.arduino.Call('TX', 1)
+			files = []
+			data_buffer = ''
+			comms_success, response = self.arduino.Call(outgoing_command, 1)
 			if not comms_success:
-				return comms_success, completed, data_buffer	
+				return comms_success, completed, files
 			print response
-			reply = response[0][1]
 			crc_success = response[0][0]
-			if ((crc_success == True) and (reply != 'to')):						# TX command arrived and file index string successfully returned.
-				data_buffer = data_buffer + reply + '>'
-				tries = 0
-				outgoing_command = 'AK'
-				while ((completed == False) and (tries < self.MAX_PARAMETER_RETRIES)):
-					comms_success, response = self.arduino.Call(outgoing_command, 1)
-					if not comms_success:
-						return comms_success, completed, data_buffer	
-					print response						
-					reply = response[0][1]
-					crc_success = response[0][0]
-					if crc_success == True:
-						if reply == 'cr':										# Arduino has asked if we want this data frame reset.
-							outgoing_command = 'AR'
+			reply = response[0][1]
+			if crc_success == True:
+				if reply == 'to':
+					tries += 1
+					outgoing_command = 'TX'
+				else:
+					tries = 0
+					if reply.startswith('f}'):
+						data_buffer += reply
+						outgoing_command = 'AK'
+					resend_required = False
+					while ((completed == False) and (tries < self.MAX_PARAMETER_RETRIES)):
+						comms_success, response = self.arduino.Call(outgoing_command, 1)
+						if not comms_success:
+							return comms_success, completed, files
+						print response
+						crc_success = response[0][0]
+						reply = response[0][1]
+						if crc_success == True:
+							if reply.startswith('f}'):
+								resend_required = False
+								files.append(data_buffer)
+								data_buffer = reply
+								outgoing_command = 'AK'
+							elif reply == 'to':
+								tries = 0
+								outgoing_command = 'TX'
+								break
+							elif reply == 'cr':
+								if resend_required == True:
+									outgoing_command = 'AR'
+									tries += 1
+								else:
+									outgoing_command = 'AK'
+							elif reply == 'fs':
+								outgoing_command = 'CC'
+							elif reply == 'cc':
+								files.append(data_buffer)
+								completed = True
+							else:
+								data_buffer += reply
+								outgoing_command = 'AK'
+						else:
 							tries += 1
-						elif reply == 'fs':										# Arduino has signalled that it is finished, need to ask for confirmation.
-							outgoing_command = 'CC'
-						elif reply == 'cc':										# Arduino has confirmed TX completion.
-							completed = True
-						elif reply == 'to':										# Arduino sent timeout. Send TX command again.
-							tries = 0
-							break
-						else:													# Next data frame arrived.
-							data_buffer += reply
-							outgoing_command = 'AK'
-					elif crc_success == False:									# Reply arrived garbled, ask for data frame to be resent.
-						outgoing_command = 'AR'
-						tries += 1
-				tries = 0
-			elif ((crc_success == True) and (reply == 'to')):					# Arduino failed to understand command or sent timeout ('to'). Send TX command again.
+							resend_required = True
+							outgoing_command = 'AR'
+			else:
 				tries += 1
-			elif crc_success == False:											# File index string reply arrived garbled so send TX command again to ask Arduino to repeat
-				tries += 1
-		return comms_success, completed, data_buffer
+				outgoing_command = 'TX'
+		return comms_success, completed, files
 
 	def setTime(self):
 		completed = False
@@ -363,7 +393,7 @@ class AQMeshStation():
 	def internetOn(self):
 		print 'Checking for working internet connection...'
 		try:
-			urllib.urlopen(self.WEB_CONNECTIVITY_CHECK_URL)
+			urllib2.urlopen(self.WEB_CONNECTIVITY_CHECK_URL, timeout = 10.0)
 			print 'Connection works!'
 			return True
 		except:
