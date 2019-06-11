@@ -52,40 +52,45 @@ class AQMeshStation():
 		comms_success, completed, files = self.spoolData()
 		print files
 		
-		for current_file in files:
-			current_file_name = current_file[2:14]
-			current_file_data = current_file[14:]
-			adc_data, opc_data, batt_data = self.parseData(current_file_data)
-			stored_adc_file = self.storeData('ADC', current_file_name, adc_data)
-			stored_opc_file = self.storeData('OPC', current_file_name, opc_data)
-			stored_batt_file = self.storeData('BATT', current_file_name, batt_data)
-			self.markForUpload('ADC', stored_adc_file)
-			self.markForUpload('OPC', stored_opc_file)
-			self.markForUpload('BATT', stored_batt_file)
-		
-		internet_available = False
-		for attempt in range(5):
-			internet_available = self.internetOn()
+		if len(files) > 0:
+			for current_file in files:
+				current_file_name = current_file[2:14]
+				current_file_data = current_file[14:]
+				adc_data, opc_data, batt_data = self.parseData(current_file_data)
+				if len(adc_data) > 0:
+					stored_adc_file = self.storeData('ADC', current_file_name, adc_data)
+					print self.markForUpload('ADC', stored_adc_file)
+				if len(opc_data) > 0:
+					stored_opc_file = self.storeData('OPC', current_file_name, opc_data)
+					print self.markForUpload('OPC', stored_opc_file)
+				if len(batt_data) > 0:
+					stored_batt_file = self.storeData('BATT', current_file_name, batt_data)
+					print self.markForUpload('BATT', stored_batt_file)
+			
+			time.sleep(5)
+			internet_available = False
+			for attempt in range(5):
+				internet_available = self.internetOn()
+				if internet_available:
+					break
+			
 			if internet_available:
-				break
-		
-		if internet_available:
-			file_types = ['ADC', 'OPC', 'BATT']
-			failed_uploads = []
-			for file_type in file_types:
-				files = self.waitingForUpload(file_type)
-				destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/' + file_type + '_DATA'
-				failed_uploads_of_this_type = []
-				for current_file in files:
-					upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, current_file)
-					if not upload_success:
-						failed_uploads_of_this_type.append(current_file)
-				failed_uploads.append(failed_uploads_of_this_type)
-			for i, file_type in enumerate(file_types):
-				os.remove(self.FILES_TO_UPLOAD[file_type])
-				for current_file in failed_uploads[i]:
-					self.markForUpload(file_type, current_file)
-		
+				file_types = ['ADC', 'OPC', 'BATT']
+				for file_type in file_types:
+					files = self.waitingForUpload(file_type)
+					if len(files) > 0:
+						destination_dir = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID) + '/' + file_type + '_DATA'
+						failed_uploads_of_this_type = []
+						for current_file in files:
+							upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, current_file)
+							if not upload_success:
+								failed_uploads_of_this_type.append(current_file)
+						#failed_uploads.append(failed_uploads_of_this_type)
+						os.remove(self.FILES_TO_UPLOAD[file_type])
+						for current_file in failed_uploads_of_this_type:
+							self.markForUpload(file_type, current_file)
+						print failed_uploads_of_this_type
+			
 		# Indicate that the RPI is finished updating.
 		self.running_flag.off()
 		
@@ -93,6 +98,22 @@ class AQMeshStation():
 		os.system("sudo shutdown -h now")
 		
 		# ~~~ Fin ~~~
+	
+		
+	def markForUpload(self, data_type, file_path):
+		with open(self.FILES_TO_UPLOAD[data_type], 'a') as output_file:
+			output_file.write(file_path + '\r\n')
+		return file_path
+	
+	def waitingForUpload(self, data_type):
+		files_to_upload = []
+		with open(self.FILES_TO_UPLOAD[data_type], 'r') as input_file:
+			files_to_upload = input_file.read().split()
+		return files_to_upload
+	
+	def clearUploadList(self, data_type):
+		import os
+		os.remove(self.FILES_TO_UPLOAD[data_type])
 		
 	def parseData(self, data_buffer):
 		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
@@ -151,20 +172,6 @@ class AQMeshStation():
 			output_file.write(data)
 		return file_path
 	
-	def markForUpload(self, data_type, file_path):
-		with open(self.FILES_TO_UPLOAD[data_type], 'a') as output_file:
-			output_file.write(file_path + '\r\n')
-	
-	def waitingForUpload(self, data_type):
-		files_to_upload = []
-		with open(self.FILES_TO_UPLOAD[data_type], 'r') as input_file:
-			files_to_upload = input_file.read().split()
-		return files_to_upload
-	
-	def clearUploadList(self, data_type):
-		import os
-		os.remove(self.FILES_TO_UPLOAD[data_type])
-	
 	#~ def storeData(self, dir_path, data_type, data_buffer, new_index):
 		#~ import os
 		#~ import datetime
@@ -197,31 +204,32 @@ class AQMeshStation():
 	def spoolData(self):
 		completed = False
 		comms_success = False
-		tries = 0
+		command_tries = 0
 		outgoing_command = 'TX'
-		while ((completed == False) and (tries < self.MAX_COMMAND_RETRIES)):
+		while ((completed == False) and (command_tries < self.MAX_COMMAND_RETRIES)):
 			files = []
 			data_buffer = ''
 			comms_success, response = self.arduino.Call(outgoing_command, 1)
 			if not comms_success:
-				return comms_success, completed, files
+				return comms_success, completed, []
 			print response
 			crc_success = response[0][0]
 			reply = response[0][1]
 			if crc_success == True:
 				if reply == 'to':
-					tries += 1
+					command_tries += 1
 					outgoing_command = 'TX'
+					time.sleep(30.0)
 				else:
-					tries = 0
+					param_tries = 0
 					if reply.startswith('f}'):
 						data_buffer += reply
 						outgoing_command = 'AK'
 					resend_required = False
-					while ((completed == False) and (tries < self.MAX_PARAMETER_RETRIES)):
+					while ((completed == False) and (param_tries < self.MAX_PARAMETER_RETRIES)):
 						comms_success, response = self.arduino.Call(outgoing_command, 1)
 						if not comms_success:
-							return comms_success, completed, files
+							return comms_success, completed, []
 						print response
 						crc_success = response[0][0]
 						reply = response[0][1]
@@ -232,13 +240,17 @@ class AQMeshStation():
 								data_buffer = reply
 								outgoing_command = 'AK'
 							elif reply == 'to':
-								tries = 0
+								param_tries = 0
+								outgoing_command = 'TX'
+								break
+							elif reply == 'fl':
+								param_tries = 0
 								outgoing_command = 'TX'
 								break
 							elif reply == 'cr':
 								if resend_required == True:
 									outgoing_command = 'AR'
-									tries += 1
+									param_tries += 1
 								else:
 									outgoing_command = 'AK'
 							elif reply == 'fs':
@@ -254,8 +266,9 @@ class AQMeshStation():
 							resend_required = True
 							outgoing_command = 'AR'
 			else:
-				tries += 1
+				command_tries += 1
 				outgoing_command = 'TX'
+				time.sleep(30.0)
 		return comms_success, completed, files
 
 	def setTime(self):
