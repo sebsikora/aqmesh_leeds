@@ -5,6 +5,8 @@ import datetime
 import time
 from gpiozero import LED
 import os
+import csv
+import copy
 
 import ArduinoComms
 
@@ -16,7 +18,6 @@ class AQMeshStation():
 		self.MAX_RECONNECT_ATTEMPTS = 10
 		
 		self.ARDUINO_PORT = '/dev/ttyACM0'
-		#~ self.ARDUINO_PORT = '/dev/ttyUSB0'
 		self.ARDUINO_BAUD = 115200
 		self.ARDUINO_TIMEOUT_SECS = 1.0
 		
@@ -26,6 +27,8 @@ class AQMeshStation():
 		self.FTP_LOGIN = 'epiz_23835097'
 		self.FTP_PASSWORD = 'YRyhrbvxTU3bBK'
 		self.FTP_ROOT_DIR = '/aqleeds.epizy.com/htdocs/'
+		self.SETTINGS_FILE_DIR = self.FTP_ROOT_DIR + 'station-' + str(STATION_ID)
+		self.SETTINGS_FILE_NAME = 'settings.csv'
 		
 		self.NTP_TIMESERVER = 'europe.pool.ntp.org'
 		self.WEB_CONNECTIVITY_CHECK_URL = 'http://www.google.com'
@@ -36,7 +39,12 @@ class AQMeshStation():
 								'OPC': './OPC_TO_UPLOAD.txt',
 								'BATT': './BATT_TO_UPLOAD.txt'}
 		
-		self.running_flag = LED(21)
+		self.DEVICE_PARAMETER_SETTINGS = {'adc_averaging_period': 10, 'opc_averaging_period': 30, 'web_update_period': 2}
+		
+		self.RPI_OUTPUT = 17
+		self.running_flag = LED(self.RPI_OUTPUT)
+		self.running_flag.off()
+		time.sleep(1.0)
 		
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
@@ -46,8 +54,6 @@ class AQMeshStation():
 		
 		# Set the time on the arduino RTC to that returned from the NTP server.
 		#~ comms_success, completed = self.setTime()
-		#~ self.setParameter('adc_averaging_period', 7)
-		#~ self.setParameter('opc_averaging_period', 3)
 		
 		comms_success, completed, files = self.spoolData()
 		print files
@@ -85,11 +91,11 @@ class AQMeshStation():
 							upload_success = self.uploadData(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, destination_dir, current_file)
 							if not upload_success:
 								failed_uploads_of_this_type.append(current_file)
-						#failed_uploads.append(failed_uploads_of_this_type)
 						os.remove(self.FILES_TO_UPLOAD[file_type])
 						for current_file in failed_uploads_of_this_type:
 							self.markForUpload(file_type, current_file)
 						print failed_uploads_of_this_type
+				self.updateDeviceSettings(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, self.SETTINGS_FILE_DIR, self.SETTINGS_FILE_NAME)
 			
 		# Indicate that the RPI is finished updating.
 		self.running_flag.off()
@@ -114,6 +120,35 @@ class AQMeshStation():
 	def clearUploadList(self, data_type):
 		import os
 		os.remove(self.FILES_TO_UPLOAD[data_type])
+	
+	def updateDeviceSettings(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, settings_file_name):
+		settings_file_exists = False
+		try:
+			ftp = ftplib.FTP()
+			ftp.set_debuglevel(2)
+			ftp.connect(ftp_server, ftp_port)
+			ftp.login(ftp_login, ftp_password)
+			ftp.cwd(destination_dir)
+			with open('./' + settings_file_name, 'wb') as f:
+				ftp.retrbinary('RETR %s' % settings_file_name, f.write)
+			settings_file_exists = True
+		except:
+			settings_file_exists = False
+
+		if settings_file_exists:
+			NEW_DEVICE_PARAMETER_SETTINGS = copy.deepcopy(self.DEVICE_PARAMETER_SETTINGS)
+			with open('./settings.csv', 'rb') as csvfile:
+				csv_reader = csv.reader(csvfile, delimiter = ',')
+				for row in csv_reader:
+					if not row[0].startswith('#'):
+						if row[0] in NEW_DEVICE_PARAMETER_SETTINGS.keys():
+							NEW_DEVICE_PARAMETER_SETTINGS[row[0]] = int(row[1])
+			for current_key in NEW_DEVICE_PARAMETER_SETTINGS.keys():
+				if self.DEVICE_PARAMETER_SETTINGS[current_key] != NEW_DEVICE_PARAMETER_SETTINGS[current_key]:
+					self.DEVICE_PARAMETER_SETTINGS[current_key] = NEW_DEVICE_PARAMETER_SETTINGS[current_key]
+					self.setParameter(current_key, self.DEVICE_PARAMETER_SETTINGS[current_key])
+					time.sleep(0.5)
+			os.remove('./' + settings_file_name)
 		
 	def parseData(self, data_buffer):
 		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
@@ -171,35 +206,6 @@ class AQMeshStation():
 		with open(file_path, 'a') as output_file:
 			output_file.write(data)
 		return file_path
-	
-	#~ def storeData(self, dir_path, data_type, data_buffer, new_index):
-		#~ import os
-		#~ import datetime
-		#~ directory_exists = os.path.isdir(dir_path)						# Check if local store directory exists.
-		#~ if not directory_exists:										# If not, create it.
-			#~ os.mkdir(dir_path)	
-		#~ todays_date = datetime.date.today()								# Get todays date in YYYYMMDD format.
-		#~ year = str(todays_date.year)
-		#~ month = str(todays_date.month).zfill(2)
-		#~ day = str(todays_date.day).zfill(2)
-		#~ date_string = year + month + day
-		#~ new_index_string = str(new_index).zfill(3)
-		#~ new_filename = dir_path + date_string + '_station-' + str(self.STATION_ID) + '_' + data_type + '.' + new_index_string
-		#~ if os.path.isfile(new_filename):
-			#~ modified_filename = new_filename[:-4] + '_' + str(0).zfill(3) + new_filename[-4:]
-			#~ if os.path.isfile(modified_filename):
-				#~ j = 1
-				#~ while (j < 1000):
-					#~ if os.path.isfile(modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]):
-						#~ j += 1
-					#~ else:
-						#~ modified_filename = modified_filename[:-8] + '_' + str(j).zfill(3) + modified_filename[-4:]
-						#~ break
-			#~ new_filename = modified_filename
-		#~ with open(new_filename, 'a') as output_file:					# Create a new file with this filename.
-			#~ print new_filename											# Write contents of data buffer to this file.
-			#~ output_file.write(data_buffer)
-		#~ return new_filename												# Return the path to the new log.
 	
 	def spoolData(self):
 		completed = False
@@ -358,7 +364,7 @@ class AQMeshStation():
 			if ((crc_success == True) and (reply != 'to')):
 				if reply == 'ak':												# CP command arrived and ack received from arduino.
 					tries = 0
-					parameter_headers = {'adc_averaging_period': 'AP', 'opc_averaging_period': 'OP'}
+					parameter_headers = {'adc_averaging_period': 'AP', 'opc_averaging_period': 'OP', 'web_update_period': 'UP'}
 					outgoing_command = parameter_headers[parameter]
 					while tries < self.MAX_PARAMETER_RETRIES:
 						comms_success, response = self.arduino.Call(outgoing_command, 1)
