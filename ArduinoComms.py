@@ -15,7 +15,7 @@ class ArduinoComms():
 		tries = 0
 		while ((comms_success == False) and (tries < self.max_reconnect_attempts)):
 			try:
-				self.ser = serial.Serial(self.port, self.baud)
+				self.ser = serial.Serial(self.port, self.baud, timeout = self.timeout)
 				comms_success = True
 				time.sleep(1.0)
 			except:

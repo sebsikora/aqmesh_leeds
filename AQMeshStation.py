@@ -1,5 +1,6 @@
 import urllib2
 import ntplib
+import ftplib
 from time import ctime
 import datetime
 import time
@@ -27,7 +28,7 @@ class AQMeshStation():
 		self.FTP_LOGIN = 'epiz_23835097'
 		self.FTP_PASSWORD = 'YRyhrbvxTU3bBK'
 		self.FTP_ROOT_DIR = '/aqleeds.epizy.com/htdocs/'
-		self.SETTINGS_FILE_DIR = self.FTP_ROOT_DIR + 'station-' + str(STATION_ID)
+		self.SETTINGS_FILE_DIR = self.FTP_ROOT_DIR + 'station-' + str(self.STATION_ID)
 		self.SETTINGS_FILE_NAME = 'settings.csv'
 		
 		self.NTP_TIMESERVER = 'europe.pool.ntp.org'
@@ -39,7 +40,9 @@ class AQMeshStation():
 								'OPC': './OPC_TO_UPLOAD.txt',
 								'BATT': './BATT_TO_UPLOAD.txt'}
 		
-		self.DEVICE_PARAMETER_SETTINGS = {'adc_averaging_period': 10, 'opc_averaging_period': 30, 'web_update_period': 2}
+		self.DEFAULT_DEVICE_PARAMETER_SETTINGS = {'adc_averaging_period': 10, 'opc_averaging_period': 30, 'web_update_period': 2}
+		self.DEVICE_PARAMETER_MIN_VALUES = {'adc_averaging_period': 1, 'opc_averaging_period': 5, 'web_update_period': 2}
+		self.DEVICE_PARAMETER_MAX_VALUES = {'adc_averaging_period': 120, 'opc_averaging_period': 60, 'web_update_period': 60}
 		
 		self.RPI_OUTPUT = 17
 		self.running_flag = LED(self.RPI_OUTPUT)
@@ -122,34 +125,100 @@ class AQMeshStation():
 		os.remove(self.FILES_TO_UPLOAD[data_type])
 	
 	def updateDeviceSettings(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, settings_file_name):
-		settings_file_exists = False
+		ftp = ftplib.FTP()
+		
+		# Download new settings file from server if it exists.
+		new_settings_file_exists = False
 		try:
-			ftp = ftplib.FTP()
 			ftp.set_debuglevel(2)
 			ftp.connect(ftp_server, ftp_port)
 			ftp.login(ftp_login, ftp_password)
 			ftp.cwd(destination_dir)
-			with open('./' + settings_file_name, 'wb') as f:
+			with open('./new_' + settings_file_name, 'wb') as f:
 				ftp.retrbinary('RETR %s' % settings_file_name, f.write)
-			settings_file_exists = True
+			new_settings_file_exists = True
 		except:
-			settings_file_exists = False
-
-		if settings_file_exists:
-			NEW_DEVICE_PARAMETER_SETTINGS = copy.deepcopy(self.DEVICE_PARAMETER_SETTINGS)
-			with open('./settings.csv', 'rb') as csvfile:
+			# In the event of an exception when obtaining the file via FTP, the with statement
+			# will have already created the empty file, so we remove it if necessary.
+			if os.path.exists('./new_' + settings_file_name):
+				os.remove('./new_' + settings_file_name)
+			new_settings_file_exists = False
+		
+		# If downloaded, check that new settings file contents are valid.
+		new_device_parameter_settings = {}
+		valid_parameter_settings = True
+		if new_settings_file_exists:
+			with open('./new_' + settings_file_name, 'rb') as csvfile:
 				csv_reader = csv.reader(csvfile, delimiter = ',')
 				for row in csv_reader:
 					if not row[0].startswith('#'):
-						if row[0] in NEW_DEVICE_PARAMETER_SETTINGS.keys():
-							NEW_DEVICE_PARAMETER_SETTINGS[row[0]] = int(row[1])
-			for current_key in NEW_DEVICE_PARAMETER_SETTINGS.keys():
-				if self.DEVICE_PARAMETER_SETTINGS[current_key] != NEW_DEVICE_PARAMETER_SETTINGS[current_key]:
-					self.DEVICE_PARAMETER_SETTINGS[current_key] = NEW_DEVICE_PARAMETER_SETTINGS[current_key]
-					self.setParameter(current_key, self.DEVICE_PARAMETER_SETTINGS[current_key])
-					time.sleep(0.5)
-			os.remove('./' + settings_file_name)
+						new_device_parameter_settings[row[0]] = row[1]
+			for current_key in new_device_parameter_settings.keys():
+				correct_data_type = False
+				try:
+					new_device_parameter_settings[current_key] = int(new_device_parameter_settings[current_key])
+					correct_data_type = True
+				except:
+					correct_data_type = False
+				if not (correct_data_type and (current_key in self.DEFAULT_DEVICE_PARAMETER_SETTINGS.keys())):
+					valid_parameter_settings = False
 		
+		# Check if there is an existing local settings file. If it exists, load it's contents. We will assume it
+		# the contents are valid, as it will have been checked at creation time.
+		local_settings_file_exists = os.path.exists('./' + settings_file_name) and os.path.isfile('./' + settings_file_name)
+		local_device_parameter_settings = {}
+		if local_settings_file_exists:
+			with open('./' + settings_file_name, 'rb') as csvfile:
+				csv_reader = csv.reader(csvfile, delimiter = ',')
+				for row in csv_reader:
+					if not row[0].startswith('#'):
+						local_device_parameter_settings[row[0]] = int(row[1])
+						
+		# We have now downloaded the new settings file (if available), and checked the validity of it's contents. We have
+		# also checked if there is an existing local settings file and loaded it's contents. 
+		#
+		# Now:
+		# i)   We have no local file and no new file -> No update.
+		# ii)  We have no local file and a new file, but the new file contents are invalid -> Delete new file, no update.
+		# iii) We have no local file and a new file -> Rename new file and update.
+		# iv)  We have a local file and no new file -> No update.
+		# v)   We have a local file and a new file, but the new file contents are invalid -> Delete new file, no update.
+		# vi)  We have a local file and a valid new file, but they are the same -> Delete new file, no update.
+		# vii) We have a local file and a valid new file that differ -> Rename new file to overwrite old file and update.
+		update_settings = False
+		if ((not local_settings_file_exists) and (not new_settings_file_exists)):
+			# i)   We have no local file and no new file -> No update.
+			update_settings = False
+		elif ((not local_settings_file_exists) and new_settings_file_exists and (not valid_parameter_settings)):
+			# ii)  We have no local file and a new file, but the new file contents are invalid -> Delete new file, no update.
+			os.remove('./new_' + settings_file_name)
+			update_settings = False
+		elif ((not local_settings_file_exists) and new_settings_file_exists and valid_parameter_settings):
+			# iii) We have no local file and a new file -> Rename new file and update.
+			os.rename('./new_' + settings_file_name, './' + settings_file_name)
+			update_settings = True
+		elif (local_settings_file_exists and (not new_settings_file_exists)):
+			# iv)  We have a local file and no new file -> No update.
+			update_settings = False
+		elif (local_settings_file_exists and new_settings_file_exists and (not valid_parameter_settings)):
+			# v)   We have a local file and a new file, but the new file contents are invalid -> Delete new file, no update.
+			os.remove('./new_' + settings_file_name)
+			update_settings = False
+		elif (local_settings_file_exists and new_settings_file_exists and valid_parameter_settings and (local_device_parameter_settings == new_device_parameter_settings)):
+			# vi)  We have a local file and a valid new file, but they are the same -> Delete new file, no update.
+			os.remove('./new_' + settings_file_name)
+			update_settings = False
+		elif (local_settings_file_exists and new_settings_file_exists and valid_parameter_settings and (not local_device_parameter_settings == new_device_parameter_settings)): 
+			# vii) We have a local file and a valid new file that differ -> Rename new file to overwrite old file and update.
+			os.remove('./' + settings_file_name)
+			os.rename('./new_' + settings_file_name, './' + settings_file_name)
+			update_settings = True
+		
+		if update_settings:
+			for current_key in new_device_parameter_settings.keys():
+				self.setParameter(current_key, new_device_parameter_settings[current_key])
+				time.sleep(2.0)
+	
 	def parseData(self, data_buffer):
 		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
 		adc_rows = [entry[6:] for entry in split_data if entry.startswith("(ADCS)")]
@@ -162,12 +231,11 @@ class AQMeshStation():
 		
 			
 	def uploadData(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, local_file_path):
-		from ftplib import FTP
 		import os
 		upload_successful = False
 		print '-------------------------------- FTP debug info --------------------------------'
 		try:
-			ftp = FTP()
+			ftp = ftplib.FTP()
 			ftp.set_debuglevel(2)
 			ftp.connect(ftp_server, ftp_port)
 			ftp.login(ftp_login, ftp_password)
@@ -176,7 +244,7 @@ class AQMeshStation():
 			ftp.storbinary('STOR %s' % os.path.basename(local_file_path), file, 1024)
 			file.close()
 			print '--------------------------------------------------------------------------------'
-			print 'Uplodad to FTP server completed.'
+			print 'Upload to FTP server completed.'
 			print '--------------------------------------------------------------------------------'
 			upload_successful = True
 		except:
