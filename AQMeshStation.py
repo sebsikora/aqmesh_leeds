@@ -44,16 +44,16 @@ class AQMeshStation():
 		self.DEVICE_PARAMETER_MIN_VALUES = {'adc_averaging_period': 1, 'opc_averaging_period': 5, 'web_update_period': 2}
 		self.DEVICE_PARAMETER_MAX_VALUES = {'adc_averaging_period': 120, 'opc_averaging_period': 60, 'web_update_period': 60}
 		
-		self.RPI_OUTPUT = 17
-		self.running_flag = LED(self.RPI_OUTPUT)
-		self.running_flag.off()
-		time.sleep(1.0)
+		#~ self.RPI_OUTPUT = 17
+		#~ self.running_flag = LED(self.RPI_OUTPUT)
+		#~ self.running_flag.off()
+		#~ time.sleep(1.0)
 		
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
 		
 		# Flag that the RPI is ready to update.
-		self.running_flag.on()
+		#~ self.running_flag.on()
 		
 		# Set the time on the arduino RTC to that returned from the NTP server.
 		#~ comms_success, completed = self.setTime()
@@ -76,7 +76,7 @@ class AQMeshStation():
 					stored_batt_file = self.storeData('BATT', current_file_name, batt_data)
 					print self.markForUpload('BATT', stored_batt_file)
 			
-			time.sleep(5)
+			time.sleep(2)
 			internet_available = False
 			for attempt in range(5):
 				internet_available = self.internetOn()
@@ -101,10 +101,10 @@ class AQMeshStation():
 				self.updateDeviceSettings(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, self.SETTINGS_FILE_DIR, self.SETTINGS_FILE_NAME)
 			
 		# Indicate that the RPI is finished updating.
-		self.running_flag.off()
+		#~ self.running_flag.off()
 		
 		# Shut down the RPI. -h forces it to 'halt' and stay off, rather than immediately restarting.
-		os.system("sudo shutdown -h now")
+		#~ os.system("sudo shutdown -h now")
 		
 		# ~~~ Fin ~~~
 	
@@ -121,7 +121,6 @@ class AQMeshStation():
 		return files_to_upload
 	
 	def clearUploadList(self, data_type):
-		import os
 		os.remove(self.FILES_TO_UPLOAD[data_type])
 	
 	def updateDeviceSettings(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, settings_file_name):
@@ -151,17 +150,25 @@ class AQMeshStation():
 			with open('./new_' + settings_file_name, 'rb') as csvfile:
 				csv_reader = csv.reader(csvfile, delimiter = ',')
 				for row in csv_reader:
-					if not row[0].startswith('#'):
+					# Check row isn't empty, or a comment, and has the right number of terms...
+					if (not len(row) == 0)  and (not row[0].startswith('#')) and (len(row) == 2):
 						new_device_parameter_settings[row[0]] = row[1]
-			for current_key in new_device_parameter_settings.keys():
-				correct_data_type = False
-				try:
-					new_device_parameter_settings[current_key] = int(new_device_parameter_settings[current_key])
-					correct_data_type = True
-				except:
-					correct_data_type = False
-				if not (correct_data_type and (current_key in self.DEFAULT_DEVICE_PARAMETER_SETTINGS.keys())):
-					valid_parameter_settings = False
+			# If the new settings file contains the correct parameter keys...
+			if new_device_parameter_settings.keys() == self.DEFAULT_DEVICE_PARAMETER_SETTINGS.keys():
+				for current_key in new_device_parameter_settings.keys():
+					# Try and convert the parameter value to an integer, capped and floored as appropriate.
+					# If the parameter value cannot be converted to an integer, the settings are invalid.
+					try:
+						new_device_parameter_settings[current_key] = int(new_device_parameter_settings[current_key])
+						if new_device_parameter_settings[current_key] < self.DEVICE_PARAMETER_MIN_VALUES[current_key]:
+							new_device_parameter_settings[current_key] = self.DEVICE_PARAMETER_MIN_VALUES[current_key]
+						elif new_device_parameter_settings[current_key] > self.DEVICE_PARAMETER_MAX_VALUES[current_key]:
+							new_device_parameter_settings[current_key] = self.DEVICE_PARAMETER_MAX_VALUES[current_key]
+					except:
+						valid_parameter_settings = False
+			else:
+				# Otherwise, it must be invalid.
+				valid_parameter_settings = False
 		
 		# Check if there is an existing local settings file. If it exists, load it's contents. We will assume it
 		# the contents are valid, as it will have been checked at creation time.
@@ -186,30 +193,38 @@ class AQMeshStation():
 		# vi)  We have a local file and a valid new file, but they are the same -> Delete new file, no update.
 		# vii) We have a local file and a valid new file that differ -> Rename new file to overwrite old file and update.
 		update_settings = False
+		result = 0
 		if ((not local_settings_file_exists) and (not new_settings_file_exists)):
 			# i)   We have no local file and no new file -> No update.
+			result = 1
 			update_settings = False
 		elif ((not local_settings_file_exists) and new_settings_file_exists and (not valid_parameter_settings)):
 			# ii)  We have no local file and a new file, but the new file contents are invalid -> Delete new file, no update.
+			result = 2
 			os.remove('./new_' + settings_file_name)
 			update_settings = False
 		elif ((not local_settings_file_exists) and new_settings_file_exists and valid_parameter_settings):
 			# iii) We have no local file and a new file -> Rename new file and update.
+			result = 3
 			os.rename('./new_' + settings_file_name, './' + settings_file_name)
 			update_settings = True
 		elif (local_settings_file_exists and (not new_settings_file_exists)):
 			# iv)  We have a local file and no new file -> No update.
+			result = 4
 			update_settings = False
 		elif (local_settings_file_exists and new_settings_file_exists and (not valid_parameter_settings)):
 			# v)   We have a local file and a new file, but the new file contents are invalid -> Delete new file, no update.
+			result = 5
 			os.remove('./new_' + settings_file_name)
 			update_settings = False
 		elif (local_settings_file_exists and new_settings_file_exists and valid_parameter_settings and (local_device_parameter_settings == new_device_parameter_settings)):
 			# vi)  We have a local file and a valid new file, but they are the same -> Delete new file, no update.
+			result = 6
 			os.remove('./new_' + settings_file_name)
 			update_settings = False
 		elif (local_settings_file_exists and new_settings_file_exists and valid_parameter_settings and (not local_device_parameter_settings == new_device_parameter_settings)): 
 			# vii) We have a local file and a valid new file that differ -> Rename new file to overwrite old file and update.
+			result = 7
 			os.remove('./' + settings_file_name)
 			os.rename('./new_' + settings_file_name, './' + settings_file_name)
 			update_settings = True
@@ -218,6 +233,7 @@ class AQMeshStation():
 			for current_key in new_device_parameter_settings.keys():
 				self.setParameter(current_key, new_device_parameter_settings[current_key])
 				time.sleep(2.0)
+		print result
 	
 	def parseData(self, data_buffer):
 		split_data = [entry for entry in data_buffer.split('\r\n') if entry]
@@ -231,7 +247,6 @@ class AQMeshStation():
 		
 			
 	def uploadData(self, ftp_server, ftp_port, ftp_login, ftp_password, destination_dir, local_file_path):
-		import os
 		upload_successful = False
 		print '-------------------------------- FTP debug info --------------------------------'
 		try:
@@ -265,7 +280,6 @@ class AQMeshStation():
 				ftp.cwd(path_to_try)
 	
 	def storeData(self, data_type, file_name, data):
-		import os
 		dir_path = self.LOCAL_DEFAULT_PATH + data_type + '/'
 		file_path = dir_path + file_name
 		directory_exists = os.path.isdir(dir_path)
@@ -293,7 +307,7 @@ class AQMeshStation():
 				if reply == 'to':
 					command_tries += 1
 					outgoing_command = 'TX'
-					time.sleep(30.0)
+					time.sleep(3.0)
 				else:
 					param_tries = 0
 					if reply.startswith('f}'):
@@ -342,7 +356,7 @@ class AQMeshStation():
 			else:
 				command_tries += 1
 				outgoing_command = 'TX'
-				time.sleep(30.0)
+				time.sleep(3.0)
 		return comms_success, completed, files
 
 	def setTime(self):
