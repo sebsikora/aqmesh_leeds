@@ -20,7 +20,7 @@ class AQMeshStation():
 		
 		self.ARDUINO_PORT = '/dev/ttyACM0'
 		self.ARDUINO_BAUD = 115200
-		self.ARDUINO_TIMEOUT_SECS = 1.0
+		self.ARDUINO_TIMEOUT_SECS = 2.0
 		
 		self.STATION_ID = 0
 		self.FTP_SERVER = 'ftpupload.net'
@@ -44,16 +44,16 @@ class AQMeshStation():
 		self.DEVICE_PARAMETER_MIN_VALUES = {'adc_averaging_period': 1, 'opc_averaging_period': 5, 'web_update_period': 2}
 		self.DEVICE_PARAMETER_MAX_VALUES = {'adc_averaging_period': 120, 'opc_averaging_period': 60, 'web_update_period': 60}
 		
-		#~ self.RPI_OUTPUT = 17
-		#~ self.running_flag = LED(self.RPI_OUTPUT)
-		#~ self.running_flag.off()
-		#~ time.sleep(1.0)
+		self.RPI_OUTPUT = 17
+		self.running_flag = LED(self.RPI_OUTPUT)
+		self.running_flag.off()
+		time.sleep(1.0)
 		
 		# Start the serial connection with the arduino.
 		comms_success = self.startComms()
 		
 		# Flag that the RPI is ready to update.
-		#~ self.running_flag.on()
+		self.running_flag.on()
 		
 		# Set the time on the arduino RTC to that returned from the NTP server.
 		#~ comms_success, completed = self.setTime()
@@ -101,10 +101,10 @@ class AQMeshStation():
 				self.updateDeviceSettings(self.FTP_SERVER, self.FTP_PORT, self.FTP_LOGIN, self.FTP_PASSWORD, self.SETTINGS_FILE_DIR, self.SETTINGS_FILE_NAME)
 			
 		# Indicate that the RPI is finished updating.
-		#~ self.running_flag.off()
+		self.running_flag.off()
 		
 		# Shut down the RPI. -h forces it to 'halt' and stay off, rather than immediately restarting.
-		#~ os.system("sudo shutdown -h now")
+		os.system("sudo shutdown -h now")
 		
 		# ~~~ Fin ~~~
 	
